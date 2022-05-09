@@ -48,6 +48,15 @@ impl Router {
         self.mpc_id=new_mpc_id.to_string();
     }
 
+    pub fn wnative(&self)->AccountId{
+        self.wnative.clone()
+    }
+
+    pub fn change_wnative(&mut self,new_wnative:ValidAccountId){
+        assert_eq!(env::predecessor_account_id(),self.mpc_id,"Router: only mpc");
+        self.wnative=new_wnative.to_string();
+    }
+
     pub fn base_gas(&self)->Gas{
         self.base_gas
     }
@@ -233,7 +242,7 @@ impl Router {
         match env::promise_result(0) {
             PromiseResult::NotReady => unreachable!(),
             PromiseResult::Successful(..) => {
-                log!("LogSwapOut token {} from {} to {} amount {} fromChainId {} toChainId {}",self.wnative,from,to,amount,self.chain_id,to_chain_id);
+                log!("LogSwapOutNative token {} from {} to {} amount {} fromChainId {} toChainId {}",self.wnative,from,to,amount,self.chain_id,to_chain_id);
             },
             PromiseResult::Failed => {
                 log!("Refund native {} from {} to {}", amount, env::current_account_id(), from);
