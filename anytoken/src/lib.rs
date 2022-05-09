@@ -241,7 +241,7 @@ impl AnyTokenTrait for AnyToken {
                     None,
                     &underlying,
                     ONE_YOCTO_DEPOSIT,
-                    env::prepaid_gas() - GAS_FOR_FT_TRANSFER,
+                    BASE_GAS,
                 )
             },
             _=>{
