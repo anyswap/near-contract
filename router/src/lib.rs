@@ -1,6 +1,6 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::json_types::{ValidAccountId, U128};
-use near_sdk::collections::UnorderedSet;
+use near_sdk::collections::{UnorderedSet,UnorderedMap};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::{
     env, ext_contract, log, near_bindgen, AccountId, Balance, Gas, PanicOnDefault,
@@ -15,17 +15,19 @@ pub struct Router {
     mpc_id: AccountId,
     chain_id:String,
     txs:UnorderedSet<String>,
-    wnative:AccountId
+    wnative:AccountId,
+    gas_for_anytoken:UnorderedMap<AccountId,Gas>,
+    base_gas:Gas
 }
 const NOT_DEPOSIT: Balance = 0;
 const ONE_YOCTO_DEPOSIT: Balance = 1;
 const BASE_GAS: Gas = 5_000_000_000_000;
-const PROMISE_CALL: Gas = 5_000_000_000_000;
-const GAS_FOR_CALL: Gas = BASE_GAS + PROMISE_CALL;
+const GAS_FOR_FT_TRANSFER_CALL: Gas = 30_000_000_000_000;
 
 #[derive(BorshSerialize, BorshStorageKey)]
 enum StorageKey {
-    Txs
+    Txs,
+    Gas
 }
 
 #[near_bindgen]
@@ -34,16 +36,49 @@ impl Router {
     pub fn new(mpc_id: ValidAccountId,wnative:ValidAccountId,chain_id:String) -> Self {
         assert!(!env::state_exists(), "Already initialized");
         Self { mpc_id: mpc_id.to_string(),wnative:wnative.to_string(),chain_id:chain_id,
-            txs:UnorderedSet::new(StorageKey::Txs) }
-    }
-
-    pub fn change_mpc_id(&mut self,new_mpc_id:ValidAccountId){
-        // assert_eq!(env::predecessor_account_id(),self.mpc_id,"Router: only mpc");
-        self.mpc_id=new_mpc_id.to_string();
+            txs:UnorderedSet::new(StorageKey::Txs),gas_for_anytoken:UnorderedMap::new(StorageKey::Gas),base_gas:BASE_GAS }
     }
 
     pub fn mpc_id(&self)->AccountId{
         self.mpc_id.clone()
+    }
+
+    pub fn change_mpc_id(&mut self,new_mpc_id:ValidAccountId){
+        assert_eq!(env::predecessor_account_id(),self.mpc_id,"Router: only mpc");
+        self.mpc_id=new_mpc_id.to_string();
+    }
+
+    pub fn base_gas(&self)->Gas{
+        self.base_gas
+    }
+
+    pub fn set_base_gas(&mut self,gas:Gas){
+        assert_eq!(env::predecessor_account_id(),self.mpc_id,"Router: only mpc");
+        self.base_gas=gas;
+    }
+
+    pub fn check_gas(&self,token:AccountId)->Gas{
+        match self.gas_for_anytoken.get(&token){
+            Some(value)=>value,
+            _=>self.base_gas*3
+        }
+    }
+
+    pub fn all_gas(&self)->Vec<(AccountId,Gas)>{
+        self.gas_for_anytoken.to_vec()
+    }
+
+    pub fn set_gas(&mut self,token:ValidAccountId,gas:Gas){
+        assert_eq!(env::predecessor_account_id(),self.mpc_id,"Router: only mpc");
+        self.gas_for_anytoken.insert(&token.to_string(),&gas);
+    }
+
+    pub fn any_swap_out_gas(&self)->Gas{
+        self.base_gas*9+GAS_FOR_FT_TRANSFER_CALL
+    }
+
+    pub fn any_swap_in_gas(&self,token:ValidAccountId)->Gas{
+        self.check_gas(token.to_string())+self.base_gas*4
     }
 
     pub fn chain_id(&self)->String{
@@ -51,16 +86,16 @@ impl Router {
     }
 
     pub fn change_chain_id(&mut self,new_chain_id:ValidAccountId){
-        // assert_eq!(env::predecessor_account_id(),self.mpc_id,"Router: only mpc");
+        assert_eq!(env::predecessor_account_id(),self.mpc_id,"Router: only mpc");
         self.chain_id=new_chain_id.to_string();
+    }
+
+    pub fn check_tx(&self,txhash:String)->bool{
+        self.txs.contains(&txhash)
     }
 
     pub fn all_txs(&self)->Vec<String>{
         self.txs.to_vec()
-    }
-
-    pub fn acheck_tx(&self,txhash:String)->bool{
-        self.txs.contains(&txhash)
     }
 
     pub fn any_swap_in(
@@ -78,13 +113,13 @@ impl Router {
             amount,
             &token,
             NOT_DEPOSIT,
-            GAS_FOR_CALL*2
+            self.check_gas(token.clone())
         ).then(
             ext_self::any_swap_in_callback(
                 tx,token,to,amount,from_chain_id,
                 &env::current_account_id(),
                 NOT_DEPOSIT,
-                GAS_FOR_CALL,
+                self.base_gas,
             )
         ).into()
     }
@@ -102,13 +137,13 @@ impl Router {
             amount,
             &self.wnative,
             NOT_DEPOSIT,
-            GAS_FOR_CALL
+            self.check_gas(self.wnative.clone())
         ).then(
             ext_self::swap_in_native_callback(
                 tx,to,amount,from_chain_id,
                 &env::current_account_id(),
                 NOT_DEPOSIT,
-                GAS_FOR_CALL,
+                self.base_gas,
             )
         ).into()
     }
@@ -130,7 +165,7 @@ impl Router {
                                 None,
                                 &token,
                                 ONE_YOCTO_DEPOSIT,
-                                GAS_FOR_CALL,
+                                self.base_gas,
                             )
                         },
                         _=>{
@@ -139,7 +174,7 @@ impl Router {
                                 amount,
                                 &token,
                                 NOT_DEPOSIT,
-                                GAS_FOR_CALL
+                                self.base_gas
                             )
                         }
                     }).then(
@@ -151,7 +186,7 @@ impl Router {
                             to_chain_id,
                             &env::current_account_id(),
                             NOT_DEPOSIT,
-                            GAS_FOR_CALL
+                            self.base_gas
                         )
                     ).into()
                 } else {
@@ -172,7 +207,7 @@ impl Router {
                 env::predecessor_account_id(),to,amount,to_chain_id,
                 &env::current_account_id(),
                 NOT_DEPOSIT,
-                GAS_FOR_CALL,
+                self.base_gas,
             )
         ).into()
     }
@@ -300,11 +335,10 @@ impl FungibleTokenReceiver for Router {
             "any_swap_out"=>{                     
                 // any_swap_out anytoken bindaddr chain_id
                 assert!(decode_msg.len()==4,"decode swap_out msg error!"); 
-                log!("pay gas {} gas_for_call {}",env::prepaid_gas(),GAS_FOR_CALL);
                 ext_any_token::underlying(
                     &decode_msg[1].to_string(),
                     NOT_DEPOSIT,
-                    GAS_FOR_CALL
+                    self.base_gas
                 ).then(
                     ext_self::any_swap_out(
                         env::predecessor_account_id(),
@@ -315,7 +349,7 @@ impl FungibleTokenReceiver for Router {
                         decode_msg[3].to_string(),
                         &env::current_account_id(),
                         NOT_DEPOSIT,
-                        GAS_FOR_CALL*4
+                        self.base_gas*5
                     )
                 ).into()
             },
