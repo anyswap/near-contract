@@ -1,10 +1,10 @@
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::json_types::{ValidAccountId, U128};
-use near_sdk::collections::{UnorderedSet,UnorderedMap};
 use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
+use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::collections::UnorderedMap;
+use near_sdk::json_types::{ValidAccountId, U128};
 use near_sdk::{
-    env, ext_contract, log, near_bindgen, AccountId, Balance, Gas, PanicOnDefault,
-    PromiseOrValue,BorshStorageKey,Promise,PromiseResult
+    env, ext_contract, log, near_bindgen, AccountId, Balance, BorshStorageKey, Gas, PanicOnDefault,
+    Promise, PromiseOrValue, PromiseResult,
 };
 
 near_sdk::setup_alloc!();
@@ -12,12 +12,16 @@ near_sdk::setup_alloc!();
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 pub struct Router {
-    mpc_id: ValidAccountId,
-    chain_id:String,
-    txs:UnorderedSet<String>,
-    wnative:ValidAccountId,
-    gas_for_anytoken:UnorderedMap<AccountId,Gas>,
-    base_gas:Gas
+    pending_mpc_id: Option<AccountId>,
+    mpc_id: AccountId,
+    chain_id: String,
+    txs: UnorderedMap<(String, u8), bool>,
+    wnative: AccountId,
+    gas_for_anytoken: UnorderedMap<AccountId, Gas>,
+    base_gas: Gas,
+    pause_in: bool,
+    pause_out: bool,
+    pause_all: bool,
 }
 const NOT_DEPOSIT: Balance = 0;
 const ONE_YOCTO_DEPOSIT: Balance = 1;
@@ -27,354 +31,494 @@ const GAS_FOR_FT_TRANSFER_CALL: Gas = 30_000_000_000_000;
 #[derive(BorshSerialize, BorshStorageKey)]
 enum StorageKey {
     Txs,
-    Gas
+    Gas,
 }
 
 #[near_bindgen]
 impl Router {
     #[init]
-    pub fn new(mpc_id: ValidAccountId,wnative:ValidAccountId,chain_id:String) -> Self {
+    pub fn new(mpc_id: AccountId, wnative: AccountId, chain_id: String) -> Self {
         assert!(!env::state_exists(), "Already initialized");
-        Self { mpc_id: mpc_id,wnative:wnative,chain_id:chain_id,
-            txs:UnorderedSet::new(StorageKey::Txs),gas_for_anytoken:UnorderedMap::new(StorageKey::Gas),base_gas:BASE_GAS }
-    }
-
-    pub fn mpc_id(&self)->AccountId{
-        self.mpc_id.to_string()
-    }
-
-    pub fn change_mpc_id(&mut self,new_mpc_id:ValidAccountId){
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        self.mpc_id=new_mpc_id;
-    }
-
-    pub fn wnative(&self)->AccountId{
-        self.wnative.to_string()
-    }
-
-    pub fn change_wnative(&mut self,new_wnative:ValidAccountId){
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        self.wnative=new_wnative;
-    }
-
-    pub fn base_gas(&self)->Gas{
-        self.base_gas
-    }
-
-    pub fn set_base_gas(&mut self,gas:Gas){
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        self.base_gas=gas;
-    }
-
-    pub fn check_gas(&self,token:ValidAccountId)->Gas{
-        match self.gas_for_anytoken.get(&token.to_string()){
-            Some(value)=>value,
-            _=>self.base_gas*7
+        Self {
+            pending_mpc_id: None,
+            mpc_id,
+            wnative,
+            chain_id,
+            txs: UnorderedMap::new(StorageKey::Txs),
+            gas_for_anytoken: UnorderedMap::new(StorageKey::Gas),
+            base_gas: BASE_GAS,
+            pause_in: false,
+            pause_out: false,
+            pause_all: false,
         }
     }
 
-    pub fn all_gas(&self)->Vec<(AccountId,Gas)>{
+    pub fn mpc_id(&self) -> AccountId {
+        self.mpc_id.to_string()
+    }
+
+    pub fn pending_mpc_id(&self) -> AccountId {
+        match &self.pending_mpc_id {
+            Some(pending_mpc_id) => pending_mpc_id.to_string(),
+            _ => String::from(""),
+        }
+    }
+
+    pub fn change_mpc_id(&mut self, new_mpc_id: AccountId) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.pending_mpc_id = Some(new_mpc_id);
+    }
+
+    pub fn apply_mpc_id(&mut self) {
+        assert!(
+            env::predecessor_account_id() == self.mpc_id,
+            "Router: FORBIDDEN"
+        );
+        assert!(
+            self.pending_mpc_id() != String::from(""),
+            "Router: must call change_mpc_id before this"
+        );
+        self.pending_mpc_id = None;
+        self.mpc_id = self.pending_mpc_id();
+    }
+
+    pub fn set_pause_in(&mut self, pause_in: bool) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.pause_in = pause_in;
+    }
+
+    pub fn set_pause_out(&mut self, pause_out: bool) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.pause_out = pause_out;
+    }
+
+    pub fn set_pause_all(&mut self, pause_all: bool) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.pause_all = pause_all;
+    }
+
+    pub fn wnative(&self) -> AccountId {
+        self.wnative.to_string()
+    }
+
+    pub fn change_wnative(&mut self, new_wnative: AccountId) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.wnative = new_wnative;
+    }
+
+    pub fn base_gas(&self) -> Gas {
+        self.base_gas
+    }
+
+    pub fn set_base_gas(&mut self, gas: Gas) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.base_gas = gas;
+    }
+
+    pub fn check_gas(&self, token: AccountId) -> Gas {
+        match self.gas_for_anytoken.get(&token) {
+            Some(value) => value,
+            _ => self.base_gas * 7,
+        }
+    }
+
+    pub fn all_gas(&self) -> Vec<(AccountId, Gas)> {
         self.gas_for_anytoken.to_vec()
     }
 
-    pub fn set_gas(&mut self,token:ValidAccountId,gas:Gas){
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        self.gas_for_anytoken.insert(&token.to_string(),&gas);
+    pub fn set_gas(&mut self, token: AccountId, gas: Gas) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.gas_for_anytoken.insert(&token, &gas);
     }
 
-    pub fn any_swap_out_gas(&self)->Gas{
-        self.base_gas*9+GAS_FOR_FT_TRANSFER_CALL
+    pub fn any_swap_out_gas(&self) -> Gas {
+        self.base_gas * 9 + GAS_FOR_FT_TRANSFER_CALL
     }
 
-    pub fn any_swap_in_gas(&self,token:ValidAccountId)->Gas{
-        self.check_gas(token)+self.base_gas*4
+    pub fn any_swap_in_gas(&self, token: AccountId) -> Gas {
+        self.check_gas(token) + self.base_gas * 4
     }
 
-    pub fn chain_id(&self)->String{
+    pub fn chain_id(&self) -> String {
         self.chain_id.clone()
     }
 
-    pub fn change_chain_id(&mut self,new_chain_id:String){
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        self.chain_id=new_chain_id;
+    pub fn change_chain_id(&mut self, new_chain_id: String) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.chain_id = new_chain_id;
     }
 
-    pub fn check_tx(&self,txhash:String)->bool{
-        self.txs.contains(&txhash)
+    pub fn check_tx(&self, txhash: String, index: u8) -> bool {
+        self.txs.get(&(txhash, index)) == Some(true)
     }
 
-    pub fn all_txs(&self)->Vec<String>{
+    pub fn all_txs(&self) -> Vec<((String, u8), bool)> {
         self.txs.to_vec()
+    }
+
+    fn valid_tx(&mut self, tx: String, index: u8, amount: u128) {
+        assert!(!self.pause_in && !self.pause_all, "Router: pause");
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        assert!(!self.check_tx(tx.clone(), index), "Router: tx exists");
+        assert!(amount > 0, "The amount should be a positive number");
+        self.txs.insert(&(tx.clone(), index), &true);
     }
 
     pub fn any_swap_in(
         &mut self,
         tx: String,
-        token: ValidAccountId,
-        to: ValidAccountId,
+        index: u8,
+        token: AccountId,
+        to: AccountId,
         amount: U128,
-        from_chain_id:String,
-    ) ->PromiseOrValue<U128>{
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        assert!(!self.txs.contains(&tx),"Router: tx exists");
-        assert!(amount.0>0,"The amount should be a positive number");
-        self.txs.insert(&tx);
+        from_chain_id: String,
+    ) -> PromiseOrValue<U128> {
+        self.valid_tx(tx.clone(), index, amount.0);
         ext_any_token::swap_in(
-            to.to_string(),
+            to.clone(),
             amount,
-            &token.to_string(),
+            &token,
             NOT_DEPOSIT,
-            self.check_gas(token.clone())
-        ).then(
-            ext_self::any_swap_in_callback(
-                tx,token,to,amount,from_chain_id,
-                &env::current_account_id(),
-                NOT_DEPOSIT,
-                self.base_gas,
-            )
-        ).into()
+            self.check_gas(token.clone()),
+        )
+        .then(ext_self::any_swap_in_callback(
+            tx,
+            index,
+            token,
+            to,
+            amount,
+            from_chain_id,
+            &env::current_account_id(),
+            NOT_DEPOSIT,
+            self.base_gas,
+        ))
+        .into()
     }
 
-    pub fn swap_in_native(&mut self,
+    pub fn swap_in_native(
+        &mut self,
         tx: String,
-        to: ValidAccountId,
+        index: u8,
+        to: AccountId,
         amount: U128,
-        from_chain_id:String
-    ) ->PromiseOrValue<U128>{
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        assert!(!self.txs.contains(&tx),"Router: tx exists");
-        assert!(amount.0>0,"The amount should be a positive number");
-        self.txs.insert(&tx);
+        from_chain_id: String,
+    ) -> PromiseOrValue<U128> {
+        self.valid_tx(tx.clone(), index, amount.0);
         ext_any_token::swap_in_native(
-            to.to_string(),
+            to.clone(),
             amount,
             &self.wnative,
             NOT_DEPOSIT,
-            self.check_gas(self.wnative.clone())
-        ).then(
-            ext_self::swap_in_native_callback(
-                tx,to,amount,from_chain_id,
-                &env::current_account_id(),
-                NOT_DEPOSIT,
-                self.base_gas,
-            )
-        ).into()
+            self.check_gas(self.wnative.clone()),
+        )
+        .then(ext_self::any_swap_in_callback(
+            tx.clone(),
+            index,
+            String::from(""),
+            to.clone(),
+            amount,
+            from_chain_id,
+            &env::current_account_id(),
+            NOT_DEPOSIT,
+            self.base_gas,
+        ))
+        .into()
     }
 
     pub fn any_swap_in_all(
         &mut self,
         tx: String,
-        token: ValidAccountId,
-        to: ValidAccountId,
+        token: AccountId,
+        index: u8,
+        to: AccountId,
         amount: U128,
-        from_chain_id:String,
-    ) ->PromiseOrValue<U128>{
-        assert_eq!(env::predecessor_account_id(),self.mpc_id.to_string(),"Router: only mpc");
-        assert!(!self.txs.contains(&tx),"Router: tx exists");
-        assert!(amount.0>0,"The amount should be a positive number");
-        self.txs.insert(&tx);
-        match token==self.wnative{
-            true=>{
-                ext_any_token::swap_in_native(
-                    to.to_string(),
-                    amount,
-                    &self.wnative,
-                    NOT_DEPOSIT,
-                    self.check_gas(self.wnative.clone())
-                ).then(
-                    ext_self::swap_in_native_callback(
-                        tx,to,amount,from_chain_id,
-                        &env::current_account_id(),
-                        NOT_DEPOSIT,
-                        self.base_gas,
-                    )
-                ).into()
-            },
-            _=>{
-                ext_any_token::swap_in(
-                    to.to_string(),
-                    amount,
-                    &token.to_string(),
-                    NOT_DEPOSIT,
-                    self.check_gas(token.clone())
-                ).then(
-                    ext_self::any_swap_in_callback(
-                        tx,token,to,amount,from_chain_id,
-                        &env::current_account_id(),
-                        NOT_DEPOSIT,
-                        self.base_gas,
-                    )
-                ).into()
-            }
+        from_chain_id: String,
+    ) -> PromiseOrValue<U128> {
+        self.valid_tx(tx.clone(), index, amount.0);
+        match token == self.wnative {
+            true => ext_any_token::swap_in_native(
+                to.clone(),
+                amount,
+                &self.wnative,
+                NOT_DEPOSIT,
+                self.check_gas(self.wnative.clone()),
+            )
+            .then(ext_self::any_swap_in_callback(
+                tx.clone(),
+                index,
+                String::from(""),
+                to.clone(),
+                amount,
+                from_chain_id,
+                &env::current_account_id(),
+                NOT_DEPOSIT,
+                self.base_gas,
+            ))
+            .into(),
+            _ => ext_any_token::swap_in(
+                to.clone(),
+                amount,
+                &token,
+                NOT_DEPOSIT,
+                self.check_gas(token.clone()),
+            )
+            .then(ext_self::any_swap_in_callback(
+                tx,
+                index,
+                token,
+                to.clone(),
+                amount,
+                from_chain_id,
+                &env::current_account_id(),
+                NOT_DEPOSIT,
+                self.base_gas,
+            ))
+            .into(),
         }
-
     }
 
     #[private]
-    pub fn any_swap_out(&mut self,token:AccountId,any_token:AccountId,from:AccountId,to:AccountId,amount:U128,to_chain_id:String)->PromiseOrValue<U128>{
+    pub fn any_swap_out(
+        &mut self,
+        token: AccountId,
+        any_token: AccountId,
+        from: AccountId,
+        to: AccountId,
+        amount: U128,
+        to_chain_id: String,
+    ) -> PromiseOrValue<U128> {
+        assert!(!self.pause_out && !self.pause_all, "Router: pause");
         assert_eq!(env::promise_results_count(), 1, "ERR_TOO_MANY_RESULTS");
         match env::promise_result(0) {
             PromiseResult::NotReady => unreachable!(),
             PromiseResult::Successful(value) => {
                 if let Ok(underlying) = near_sdk::serde_json::from_slice::<AccountId>(&value) {
-                    if underlying==""{
-                        assert_eq!(token,any_token,"Router: anytoken must equals to underlying when underlying is none");
-                    }else{
-                        assert_eq!(underlying,token,"Router: underlying in any_token not equals to token");
+                    if underlying == "" {
+                        assert_eq!(
+                            token, any_token,
+                            "Router: anytoken must equals to underlying when underlying is none"
+                        );
+                    } else {
+                        assert_eq!(
+                            underlying, token,
+                            "Router: underlying in any_token not equals to token"
+                        );
                     }
-                    (match token!=any_token{
-                        true=>{
-                            ext_fungible_token::ft_transfer(
-                                any_token.clone(),
-                                amount,
-                                None,
-                                &token,
-                                ONE_YOCTO_DEPOSIT,
-                                self.base_gas,
-                            )
-                        },
-                        _=>{
-                            ext_any_token::burn(
-                                env::current_account_id(),
-                                amount,
-                                &token,
-                                NOT_DEPOSIT,
-                                self.base_gas
-                            )
-                        }
-                    }).then(
-                        ext_self::any_swap_out_callback(
-                            any_token,
-                            from,
-                            to,
+                    (match token != any_token {
+                        true => ext_fungible_token::ft_transfer(
+                            any_token.clone(),
                             amount,
-                            to_chain_id,
-                            &env::current_account_id(),
+                            None,
+                            &token,
+                            ONE_YOCTO_DEPOSIT,
+                            self.base_gas,
+                        ),
+                        _ => ext_any_token::burn(
+                            env::current_account_id(),
+                            amount,
+                            &token,
                             NOT_DEPOSIT,
-                            self.base_gas
-                        )
-                    ).into()
+                            self.base_gas,
+                        ),
+                    })
+                    .then(ext_self::any_swap_out_callback(
+                        any_token,
+                        from,
+                        to,
+                        U128::from(amount),
+                        to_chain_id,
+                        &env::current_account_id(),
+                        NOT_DEPOSIT,
+                        self.base_gas,
+                    ))
+                    .into()
                 } else {
                     env::panic(b"ERR_UNDERLYING_NOT_MATCH")
                 }
-            },
+            }
             PromiseResult::Failed => env::panic(b"ERR_QUERY_UNDERLYING_FAILED"),
         }
-
     }
 
     #[payable]
-    pub fn swap_out_native(&mut self,to:String,to_chain_id:String)->PromiseOrValue<U128>{
-        let amount=env::attached_deposit();
-        assert!(amount>0,"The amount should be a positive number");
-        Promise::new(self.wnative.to_string()).transfer(amount).then(
-            ext_self::swap_out_native_callback(
-                env::predecessor_account_id(),to,amount,to_chain_id,
+    pub fn swap_out_native(&mut self, to: String, to_chain_id: String) -> PromiseOrValue<U128> {
+        assert!(!self.pause_out && !self.pause_all, "Router: pause");
+        let amount = env::attached_deposit();
+        assert!(amount > 0, "The amount should be a positive number");
+        Promise::new(self.wnative.clone())
+            .transfer(amount)
+            .then(ext_self::any_swap_out_callback(
+                String::from(""),
+                env::predecessor_account_id(),
+                to,
+                U128::from(amount),
+                to_chain_id,
                 &env::current_account_id(),
                 NOT_DEPOSIT,
                 self.base_gas,
-            )
-        ).into()
+            ))
+            .into()
     }
 
     #[private]
-    pub fn any_swap_out_callback(&mut self,token:AccountId,from:AccountId,to:AccountId,amount:U128,to_chain_id:String)->U128{
+    pub fn any_swap_out_callback(
+        &mut self,
+        token: AccountId,
+        from: AccountId,
+        to: AccountId,
+        amount: U128,
+        to_chain_id: String,
+    ) -> U128 {
         assert_eq!(env::promise_results_count(), 1, "ERR_TOO_MANY_RESULTS");
         match env::promise_result(0) {
             PromiseResult::NotReady => unreachable!(),
-            PromiseResult::Successful(..) => {
-                log!("LogSwapOut token {} from {} to {} amount {} fromChainId {} toChainId {}",token,from,to,amount.0,self.chain_id,to_chain_id);
-                U128::from(0)
+            PromiseResult::Successful(..) => match token == String::from("") {
+                true => {
+                    log!(
+                        "LogSwapOutNative token {} from {} to {} amount {} fromChainId {} toChainId {}",
+                        self.wnative,
+                        from,
+                        to,
+                        amount.0,
+                        self.chain_id,
+                        to_chain_id
+                    );
+                    U128::from(amount)
+                }
+                false => {
+                    log!(
+                        "LogSwapOut token {} from {} to {} amount {} fromChainId {} toChainId {}",
+                        token,
+                        from,
+                        to,
+                        amount.0,
+                        self.chain_id,
+                        to_chain_id
+                    );
+                    U128::from(0)
+                }
             },
-            PromiseResult::Failed => {
-                amount
-            }
-        }
-    }
-
-    #[private]
-    pub fn swap_out_native_callback(&mut self,from:AccountId,to:String,amount:Balance,to_chain_id:String)->U128 {
-        assert_eq!(env::promise_results_count(), 1, "ERR_TOO_MANY_RESULTS");
-        match env::promise_result(0) {
-            PromiseResult::NotReady => unreachable!(),
-            PromiseResult::Successful(..) => {
-                log!("LogSwapOutNative token {} from {} to {} amount {} fromChainId {} toChainId {}",self.wnative,from,to,amount,self.chain_id,to_chain_id);
-                U128::from(amount)
-            },
-            PromiseResult::Failed => {
-                log!("Refund native {} from {} to {}", amount, env::current_account_id(), from);
-                Promise::new(from).transfer(amount);
-                U128::from(0)
+            PromiseResult::Failed => match token == String::from("") {
+                true => {
+                    Promise::new(from).transfer(amount.0);
+                    U128::from(0)
+                }
+                false => amount,
             },
         }
     }
 
     #[private]
     pub fn any_swap_in_callback(
-        &mut self,        
+        &mut self,
         tx: String,
-        token: ValidAccountId,
-        to: ValidAccountId,
+        token: AccountId,
+        index: u8,
+        to: AccountId,
         amount: U128,
-        from_chain_id:String
-    )->U128 {
+        from_chain_id: String,
+    ) -> U128 {
         assert_eq!(env::promise_results_count(), 1, "ERR_TOO_MANY_RESULTS");
         match env::promise_result(0) {
             PromiseResult::NotReady => unreachable!(),
             PromiseResult::Successful(..) => {
-                log!("LogSwapIn txs {} token {} to {} amount {} fromChainId {} toChainId {}", tx,token,to,amount.0,from_chain_id,self.chain_id);
+                match token == String::from("") {
+                    true => {
+                        log!(
+                            "LogSwapInNative txs {} to {} amount {} fromChainId {} toChainId {}",
+                            tx,
+                            to,
+                            amount.0,
+                            from_chain_id,
+                            self.chain_id
+                        );
+                    }
+                    false => {
+                        log!(
+                            "LogSwapIn txs {} token {} to {} amount {} fromChainId {} toChainId {}",
+                            tx,
+                            token,
+                            to,
+                            amount.0,
+                            from_chain_id,
+                            self.chain_id
+                        );
+                    }
+                }
                 U128::from(amount)
-            },
+            }
             PromiseResult::Failed => {
-                self.txs.remove(&tx);
+                self.txs.remove(&(tx, index));
                 U128::from(0)
-            },
-        }
-    }
-
-    #[private]
-    pub fn swap_in_native_callback(
-        &mut self,        
-        tx: String,
-        to: ValidAccountId,
-        amount: U128,
-        from_chain_id:String
-    ) ->U128{
-        assert_eq!(env::promise_results_count(), 1, "ERR_TOO_MANY_RESULTS");
-        match env::promise_result(0) {
-            PromiseResult::NotReady => unreachable!(),
-            PromiseResult::Successful(..) => {
-                log!("LogSwapInNative txs {} to {} amount {} fromChainId {} toChainId {}", tx,to,amount.0,from_chain_id,self.chain_id);
-                U128::from(amount)
-            },
-            PromiseResult::Failed => {
-                self.txs.remove(&tx);
-                U128::from(0)
-            },
+            }
         }
     }
 }
 
 #[ext_contract(ext_self)]
 pub trait ExtSelf {
-    fn any_swap_out(&mut self,token:AccountId,any_token:AccountId,from:AccountId,to:AccountId,amount:U128,to_chain_id:String)->PromiseOrValue<U128>;
-    fn any_swap_out_callback(&mut self,token:AccountId,from:AccountId,to:AccountId,amount:U128,to_chain_id:String)->U128;
-    fn swap_out_native_callback(&mut self,from:AccountId,to:String,amount:Balance,to_chain_id:String)->U128;
-    fn any_swap_in_callback(        
-        &mut self,        
-        tx: String,
-        token: ValidAccountId,
-        to: ValidAccountId,
+    fn any_swap_out(
+        &mut self,
+        token: AccountId,
+        any_token: AccountId,
+        from: AccountId,
+        to: AccountId,
         amount: U128,
-        from_chain_id:String
-    )->U128;
-    fn swap_in_native_callback(        
-        &mut self,        
-        tx: String,
-        to: ValidAccountId,
+        to_chain_id: String,
+    ) -> PromiseOrValue<U128>;
+    fn any_swap_out_callback(
+        &mut self,
+        token: AccountId,
+        from: AccountId,
+        to: AccountId,
         amount: U128,
-        from_chain_id:String
-    )->U128;
+        to_chain_id: String,
+    ) -> U128;
+    fn any_swap_in_callback(
+        &mut self,
+        tx: String,
+        index: u8,
+        token: AccountId,
+        to: AccountId,
+        amount: U128,
+        from_chain_id: String,
+    ) -> U128;
 }
 
 #[ext_contract(ext_fungible_token)]
@@ -384,8 +528,8 @@ pub trait FungibleTokenContract {
 
 #[ext_contract(ext_any_token)]
 pub trait AnyTokenTrait {
-    fn burn(&mut self,account_id:AccountId,amount:U128);
-    fn underlying(&self)->AccountId;
+    fn burn(&mut self, account_id: AccountId, amount: U128);
+    fn underlying(&self) -> AccountId;
     fn swap_out(&self);
     fn swap_in(&mut self, receiver_id: AccountId, amount: U128);
     fn swap_in_native(&mut self, receiver_id: AccountId, amount: U128);
@@ -393,9 +537,6 @@ pub trait AnyTokenTrait {
 
 #[near_bindgen]
 impl FungibleTokenReceiver for Router {
-    /// If given `msg: "take-my-money", immediately returns U128::From(0)
-    /// Otherwise, makes a cross-contract call to own `value_please` function, passing `msg`
-    /// value_please will attempt to parse `msg` as an integer and return a U128 version of it
     fn ft_on_transfer(
         &mut self,
         sender_id: ValidAccountId,
@@ -403,17 +544,13 @@ impl FungibleTokenReceiver for Router {
         msg: String,
     ) -> PromiseOrValue<U128> {
         let sender = sender_id.to_string();
-        let decode_msg:Vec<&str>=msg.as_str().split(" ").collect();
-        match decode_msg[0]{
-            "any_swap_out"=>{                     
+        let decode_msg: Vec<&str> = msg.as_str().split(" ").collect();
+        match decode_msg[0] {
+            "any_swap_out" => {
                 // any_swap_out anytoken bindaddr chain_id
-                assert!(decode_msg.len()==4,"decode swap_out msg error!"); 
-                ext_any_token::underlying(
-                    &decode_msg[1].to_string(),
-                    NOT_DEPOSIT,
-                    self.base_gas
-                ).then(
-                    ext_self::any_swap_out(
+                assert!(decode_msg.len() == 4, "decode swap_out msg error!");
+                ext_any_token::underlying(&decode_msg[1].to_string(), NOT_DEPOSIT, self.base_gas)
+                    .then(ext_self::any_swap_out(
                         env::predecessor_account_id(),
                         decode_msg[1].to_string(),
                         sender,
@@ -422,11 +559,11 @@ impl FungibleTokenReceiver for Router {
                         decode_msg[3].to_string(),
                         &env::current_account_id(),
                         NOT_DEPOSIT,
-                        self.base_gas*5
-                    )
-                ).into()
-            },
-            _=>{
+                        self.base_gas * 5,
+                    ))
+                    .into()
+            }
+            _ => {
                 log!("Router: msg parse not match");
                 PromiseOrValue::Value(amount)
             }
