@@ -115,6 +115,24 @@ impl Router {
         self.pause_all = pause_all;
     }
 
+    pub fn set_underlying_and_anytoken(&mut self, underlying: AccountId, any_token: AccountId) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+        self.underlying_to_anytoken.insert(&underlying, &any_token);
+        self.anytoken_to_underlying.insert(&any_token, &underlying);
+    }
+
+    pub fn underlying_to_anytoken(&self, underlying: AccountId) -> Option<AccountId> {
+        self.underlying_to_anytoken.get(&underlying)
+    }
+
+    pub fn anytoken_to_underlying(&self, any_token: AccountId) -> Option<AccountId> {
+        self.anytoken_to_underlying.get(&any_token)
+    }
+
     pub fn any_near(&self) -> AccountId {
         self.any_near.to_string()
     }
