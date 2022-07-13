@@ -18,14 +18,13 @@ NOTES:
 use near_contract_standards::fungible_token::metadata::{
     FungibleTokenMetadata, FungibleTokenMetadataProvider, FT_METADATA_SPEC,
 };
-use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_contract_standards::fungible_token::FungibleToken;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LazyOption, UnorderedSet};
 use near_sdk::json_types::{ValidAccountId, U128};
 use near_sdk::{
-    assert_one_yocto, env, ext_contract, log, near_bindgen, AccountId, Balance, BorshStorageKey,
-    Gas, PanicOnDefault, PromiseOrValue, PromiseResult,
+    env, log, near_bindgen, AccountId, Balance, BorshStorageKey, PanicOnDefault, PromiseOrValue,
+    PromiseResult,
 };
 
 near_sdk::setup_alloc!();
@@ -42,9 +41,6 @@ pub struct AnyToken {
 }
 
 const DATA_IMAGE_SVG_NEAR_ICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 288 288'%3E%3Cg id='l' data-name='l'%3E%3Cpath d='M187.58,79.81l-30.1,44.69a3.2,3.2,0,0,0,4.75,4.2L191.86,103a1.2,1.2,0,0,1,2,.91v80.46a1.2,1.2,0,0,1-2.12.77L102.18,77.93A15.35,15.35,0,0,0,90.47,72.5H87.34A15.34,15.34,0,0,0,72,87.84V201.16A15.34,15.34,0,0,0,87.34,216.5h0a15.35,15.35,0,0,0,13.08-7.31l30.1-44.69a3.2,3.2,0,0,0-4.75-4.2L96.14,186a1.2,1.2,0,0,1-2-.91V104.61a1.2,1.2,0,0,1,2.12-.77l89.55,107.23a15.35,15.35,0,0,0,11.71,5.43h3.13A15.34,15.34,0,0,0,216,201.16V87.84A15.34,15.34,0,0,0,200.66,72.5h0A15.35,15.35,0,0,0,187.58,79.81Z'/%3E%3C/g%3E%3C/svg%3E";
-const ONE_YOCTO_DEPOSIT: Balance = 1;
-const BASE_GAS: Gas = 5_000_000_000_000;
-const NOT_DEPOSIT: Balance = 0;
 
 #[derive(BorshSerialize, BorshStorageKey)]
 enum StorageKey {
@@ -180,43 +176,6 @@ impl AnyToken {
         self.minters.remove(account_id);
     }
 
-    #[payable]
-    pub fn withdraw_underlying(
-        &mut self,
-        receiver_id: ValidAccountId,
-        amount: U128,
-    ) -> PromiseOrValue<U128> {
-        assert_one_yocto();
-        let sender: ValidAccountId = env::predecessor_account_id().try_into().unwrap();
-        assert!(
-            self.ft_balance_of(sender.clone()).0 >= amount.0,
-            "The withdraw amount must less than balances"
-        );
-        self.token.internal_withdraw(&sender.to_string(), amount.0);
-        match &self.underlying {
-            Some(underlying) => ext_fungible_token::ft_transfer(
-                receiver_id.to_string(),
-                amount,
-                None,
-                &underlying,
-                ONE_YOCTO_DEPOSIT,
-                BASE_GAS,
-            )
-            .then(ext_self::ft_transfer_callback(
-                sender.to_string(),
-                amount,
-                &env::current_account_id(),
-                NOT_DEPOSIT,
-                BASE_GAS,
-            ))
-            .into(),
-            _ => {
-                self.token.internal_deposit(&sender.to_string(), amount.0);
-                PromiseOrValue::Value(U128::from(0))
-            }
-        }
-    }
-
     #[private]
     pub fn ft_transfer_callback(&mut self, sender: AccountId, amount: U128) -> U128 {
         assert_eq!(env::promise_results_count(), 1, "ERR_TOO_MANY_RESULTS");
@@ -238,45 +197,6 @@ near_contract_standards::impl_fungible_token_storage!(AnyToken, token, on_accoun
 impl FungibleTokenMetadataProvider for AnyToken {
     fn ft_metadata(&self) -> FungibleTokenMetadata {
         self.metadata.get().unwrap()
-    }
-}
-
-#[near_bindgen]
-impl FungibleTokenReceiver for AnyToken {
-    /// If given `msg: "take-my-money", immediately returns U128::From(0)
-    /// Otherwise, makes a cross-contract call to own `value_please` function, passing `msg`
-    /// value_please will attempt to parse `msg` as an integer and return a U128 version of it
-    fn ft_on_transfer(
-        &mut self,
-        sender_id: ValidAccountId,
-        amount: U128,
-        msg: String,
-    ) -> PromiseOrValue<U128> {
-        // Verifying that we were called by fungible token contract that we expect.
-        assert_eq!(
-            &env::predecessor_account_id(),
-            &self.underlying(),
-            "Only supports the one fungible token contract"
-        );
-        let decode_msg: Vec<&str> = msg.as_str().split(" ").collect();
-        match decode_msg[0] {
-            "deposit_underlying" => {
-                // deposit_underlying receiver_id
-                assert!(decode_msg.len() == 2, "decode swap_out msg error!");
-                self.mint(sender_id.to_string(), amount);
-                log!(
-                    "Deposit Underlying {} sender_id {} receiver_id {}",
-                    amount.0,
-                    sender_id,
-                    decode_msg[1].to_string()
-                );
-                PromiseOrValue::Value(U128::from(0))
-            }
-            _ => {
-                log!("Router: msg parse not match");
-                PromiseOrValue::Value(amount)
-            }
-        }
     }
 }
 
@@ -321,15 +241,4 @@ impl AnyTokenTrait for AnyToken {
             env::current_account_id()
         );
     }
-}
-
-#[ext_contract(ext_fungible_token)]
-pub trait FungibleTokenContract {
-    fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>);
-    fn ft_balance_of(&self, account_id: ValidAccountId) -> U128;
-}
-
-#[ext_contract(ext_self)]
-pub trait ExtSelf {
-    fn ft_transfer_callback(&mut self, sender: AccountId, amount: U128) -> U128;
 }

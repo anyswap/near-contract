@@ -16,9 +16,9 @@ pub struct Router {
     mpc_id: AccountId,
     chain_id: String,
     txs: UnorderedMap<(String, u8), bool>,
-    wnative: AccountId,
-    gas_for_anytoken: UnorderedMap<AccountId, Gas>,
-    underlying_for_anytoken: UnorderedMap<AccountId, AccountId>,
+    any_near: AccountId,
+    underlying_to_anytoken: UnorderedMap<AccountId, AccountId>,
+    anytoken_to_underlying: UnorderedMap<AccountId, AccountId>,
     base_gas: Gas,
     pause_in: bool,
     pause_out: bool,
@@ -31,23 +31,23 @@ const BASE_GAS: Gas = 5_000_000_000_000;
 #[derive(BorshSerialize, BorshStorageKey)]
 enum StorageKey {
     Txs,
-    Gas,
     Underlying,
+    AnyToken,
 }
 
 #[near_bindgen]
 impl Router {
     #[init]
-    pub fn new(mpc_id: AccountId, wnative: AccountId, chain_id: String) -> Self {
+    pub fn new(mpc_id: AccountId, any_near: AccountId, chain_id: String) -> Self {
         assert!(!env::state_exists(), "Already initialized");
         Self {
             pending_mpc_id: None,
             mpc_id,
-            wnative,
+            any_near,
             chain_id,
             txs: UnorderedMap::new(StorageKey::Txs),
-            gas_for_anytoken: UnorderedMap::new(StorageKey::Gas),
-            underlying_for_anytoken: UnorderedMap::new(StorageKey::Underlying),
+            underlying_to_anytoken: UnorderedMap::new(StorageKey::Underlying),
+            anytoken_to_underlying: UnorderedMap::new(StorageKey::AnyToken),
             base_gas: BASE_GAS,
             pause_in: false,
             pause_out: false,
@@ -115,17 +115,17 @@ impl Router {
         self.pause_all = pause_all;
     }
 
-    pub fn wnative(&self) -> AccountId {
-        self.wnative.to_string()
+    pub fn any_near(&self) -> AccountId {
+        self.any_near.to_string()
     }
 
-    pub fn change_wnative(&mut self, new_wnative: AccountId) {
+    pub fn change_any_near(&mut self, new_any_near: AccountId) {
         assert_eq!(
             env::predecessor_account_id(),
             self.mpc_id,
             "Router: only mpc"
         );
-        self.wnative = new_wnative;
+        self.any_near = new_any_near;
     }
 
     pub fn base_gas(&self) -> Gas {
@@ -141,28 +141,8 @@ impl Router {
         self.base_gas = gas;
     }
 
-    pub fn check_gas(&self, token: AccountId) -> Gas {
-        match self.gas_for_anytoken.get(&token) {
-            Some(value) => value,
-            _ => self.base_gas * 7,
-        }
-    }
-
-    pub fn all_gas(&self) -> Vec<(AccountId, Gas)> {
-        self.gas_for_anytoken.to_vec()
-    }
-
-    pub fn set_gas(&mut self, token: AccountId, gas: Gas) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
-        self.gas_for_anytoken.insert(&token, &gas);
-    }
-
-    pub fn any_swap_in_gas(&self, token: AccountId) -> Gas {
-        self.check_gas(token) + self.base_gas * 4
+    pub fn any_swap_in_gas(&self) -> Gas {
+        self.base_gas * 4
     }
 
     pub fn chain_id(&self) -> String {
@@ -208,7 +188,7 @@ impl Router {
         from_chain_id: String,
     ) -> PromiseOrValue<U128> {
         self.valid_tx(tx.clone(), index, amount.0);
-        match self.underlying_for_anytoken.get(&token) {
+        match self.anytoken_to_underlying.get(&token) {
             Some(underlying) => ext_fungible_token::ft_transfer(
                 to.to_string(),
                 amount,
@@ -226,7 +206,7 @@ impl Router {
                 from_chain_id,
                 &env::current_account_id(),
                 NOT_DEPOSIT,
-                self.base_gas,
+                self.any_swap_in_gas(),
             ))
             .into(),
             _ => {
@@ -263,7 +243,7 @@ impl Router {
                 from_chain_id,
                 &env::current_account_id(),
                 NOT_DEPOSIT,
-                self.base_gas,
+                self.any_swap_in_gas(),
             ))
             .into()
     }
@@ -278,7 +258,7 @@ impl Router {
         from_chain_id: String,
     ) -> PromiseOrValue<U128> {
         self.valid_tx(tx.clone(), index, amount.0);
-        match token == self.wnative {
+        match token == self.any_near {
             true => self.swap_in_native(tx, index, to, amount, from_chain_id),
             _ => self
                 .any_swap_in(tx, index, to, token, amount, from_chain_id)
@@ -293,7 +273,7 @@ impl Router {
         assert!(amount > 0, "The amount should be a positive number");
         log!(
             "LogSwapOutNative token {} from {} to {} amount {} fromChainId {} toChainId {}",
-            self.wnative,
+            self.any_near,
             env::predecessor_account_id(),
             to,
             amount,
@@ -301,6 +281,27 @@ impl Router {
             to_chain_id
         );
         PromiseOrValue::Value(U128::from(0))
+    }
+
+    #[payable]
+    pub fn deposit_near(&mut self, to: AccountId) -> PromiseOrValue<U128> {
+        let amount = env::attached_deposit();
+        assert!(amount > 0, "The amount should be a positive number");
+        log!(
+            "LogDepositNear token {} from {} to {} amount {}",
+            self.any_near(),
+            env::predecessor_account_id(),
+            to.to_string(),
+            amount,
+        );
+        ext_any_token::mint(
+            to.to_string(),
+            U128::from(amount),
+            &self.any_near(),
+            NOT_DEPOSIT,
+            BASE_GAS,
+        )
+        .into()
     }
 
     #[private]
@@ -318,7 +319,7 @@ impl Router {
             PromiseResult::NotReady => unreachable!(),
             PromiseResult::Successful(..) => {
                 log!(
-                    "LogSwapIn txs {} index {} token {} to {} amount {} fromChainId {} toChainId {}",
+                    "LogSwapInUnderlying txs {} index {} token {} to {} amount {} fromChainId {} toChainId {}",
                     tx,
                     index,
                     token,
@@ -362,7 +363,7 @@ impl Router {
                     "LogSwapInNative txs {} index {} token {} to {} amount {} fromChainId {} toChainId {}",
                     tx,
                     index,
-                    self.wnative(),
+                    self.any_near(),
                     to,
                     amount.0,
                     from_chain_id,
@@ -375,7 +376,7 @@ impl Router {
                     "LogSwapInAnyNative txs {} index {} token {} to {} amount {} fromChainId {} toChainId {}",
                     tx,
                     index,
-                    self.wnative(),
+                    self.any_near(),
                     to,
                     amount.0,
                     from_chain_id,
@@ -384,7 +385,7 @@ impl Router {
                 ext_any_token::mint(
                     to.to_string(),
                     amount,
-                    &self.wnative(),
+                    &self.any_near(),
                     NOT_DEPOSIT,
                     BASE_GAS,
                 )
@@ -436,20 +437,82 @@ impl FungibleTokenReceiver for Router {
     ) -> PromiseOrValue<U128> {
         let sender = sender_id.to_string();
         let decode_msg: Vec<&str> = msg.as_str().split(" ").collect();
+        let mut token = env::predecessor_account_id();
         match decode_msg[0] {
             "any_swap_out" => {
-                // bindaddr chain_id
-                assert!(decode_msg.len() == 2, "decode swap_out msg error!");
+                // any_swap_out bindaddr chain_id
+                assert!(decode_msg.len() == 3, "decode swap_out msg error!");
+                match self.underlying_to_anytoken.get(&token) {
+                    Some(any_token) => token = any_token,
+                    _ => {}
+                }
                 log!(
                     "LogSwapOut token {} from {} to {} amount {} fromChainId {} toChainId {}",
-                    env::predecessor_account_id(),
+                    token,
                     sender,
-                    decode_msg[0].to_string(),
+                    decode_msg[1].to_string(),
                     amount.0,
                     self.chain_id,
-                    decode_msg[1].to_string()
+                    decode_msg[2].to_string()
                 );
                 PromiseOrValue::Value(U128::from(0))
+            }
+            "deposit_underlying" => {
+                // deposit_underlying bindaddr
+                assert!(
+                    decode_msg.len() == 2,
+                    "decode deposit_underlying msg error!"
+                );
+                match self.underlying_to_anytoken.get(&token) {
+                    Some(any_token) => {
+                        log!(
+                            "LogDepositUnderlying token {} from {} to {} amount {}",
+                            token,
+                            sender,
+                            decode_msg[1].to_string(),
+                            amount.0,
+                        );
+                        ext_any_token::mint(
+                            decode_msg[1].to_string(),
+                            amount,
+                            &any_token,
+                            NOT_DEPOSIT,
+                            BASE_GAS,
+                        )
+                        .into()
+                    }
+                    _ => PromiseOrValue::Value(amount),
+                }
+            }
+            "withdraw" => {
+                // withdraw bindaddr
+                assert!(decode_msg.len() == 2, "decode withdraw msg error!");
+                match token == self.any_near() {
+                    true => Promise::new(decode_msg[1].to_string().to_string())
+                        .transfer(amount.0)
+                        .into(),
+                    _ => match self.anytoken_to_underlying.get(&token) {
+                        Some(underlying) => {
+                            log!(
+                                "LogWithdraw token {} from {} to {} amount {}",
+                                token,
+                                sender,
+                                decode_msg[1].to_string(),
+                                amount.0,
+                            );
+                            ext_fungible_token::ft_transfer(
+                                decode_msg[1].to_string(),
+                                amount,
+                                None,
+                                &underlying,
+                                ONE_YOCTO_DEPOSIT,
+                                BASE_GAS,
+                            )
+                            .into()
+                        }
+                        _ => PromiseOrValue::Value(amount),
+                    },
+                }
             }
             _ => {
                 log!("Router: msg parse not match");
