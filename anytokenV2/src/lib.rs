@@ -24,7 +24,6 @@ use near_sdk::collections::{LazyOption, UnorderedSet};
 use near_sdk::json_types::{ValidAccountId, U128};
 use near_sdk::{
     env, log, near_bindgen, AccountId, Balance, BorshStorageKey, PanicOnDefault, PromiseOrValue,
-    PromiseResult,
 };
 
 near_sdk::setup_alloc!();
@@ -175,19 +174,6 @@ impl AnyToken {
         );
         self.minters.remove(account_id);
     }
-
-    #[private]
-    pub fn ft_transfer_callback(&mut self, sender: AccountId, amount: U128) -> U128 {
-        assert_eq!(env::promise_results_count(), 1, "ERR_TOO_MANY_RESULTS");
-        match env::promise_result(0) {
-            PromiseResult::NotReady => unreachable!(),
-            PromiseResult::Successful(..) => amount,
-            PromiseResult::Failed => {
-                self.token.internal_deposit(&sender.to_string(), amount.0);
-                U128::from(0)
-            }
-        }
-    }
 }
 
 near_contract_standards::impl_fungible_token_core!(AnyToken, token, on_tokens_burned);
@@ -201,13 +187,13 @@ impl FungibleTokenMetadataProvider for AnyToken {
 }
 
 pub trait AnyTokenTrait {
-    fn burn(&mut self, account_id: AccountId, amount: U128);
-    fn mint(&mut self, account_id: AccountId, amount: U128);
+    fn burn(&mut self, account_id: AccountId, amount: U128) -> PromiseOrValue<U128>;
+    fn mint(&mut self, account_id: AccountId, amount: U128) -> PromiseOrValue<U128>;
 }
 
 #[near_bindgen]
 impl AnyTokenTrait for AnyToken {
-    fn mint(&mut self, account_id: AccountId, amount: U128) {
+    fn mint(&mut self, account_id: AccountId, amount: U128) -> PromiseOrValue<U128> {
         assert!(
             self.minters.contains(&env::predecessor_account_id())
                 || env::predecessor_account_id() == env::current_account_id(),
@@ -218,15 +204,10 @@ impl AnyTokenTrait for AnyToken {
             self.token.internal_register_account(&account_id);
         };
         self.token.internal_deposit(&account_id, amount.0);
-        log!(
-            "Transfer {} from {} to {}",
-            amount.0,
-            env::current_account_id(),
-            account_id
-        );
+        PromiseOrValue::Value(U128::from(0))
     }
 
-    fn burn(&mut self, account_id: AccountId, amount: U128) {
+    fn burn(&mut self, account_id: AccountId, amount: U128) -> PromiseOrValue<U128> {
         assert!(
             self.minters.contains(&env::predecessor_account_id())
                 || env::predecessor_account_id() == env::current_account_id(),
@@ -234,11 +215,6 @@ impl AnyTokenTrait for AnyToken {
         );
         assert!(amount.0 > 0, "The amount should be a positive number");
         self.token.internal_withdraw(&account_id, amount.0);
-        log!(
-            "Transfer {} from {} to {}",
-            amount.0,
-            account_id,
-            env::current_account_id()
-        );
+        PromiseOrValue::Value(U128::from(0))
     }
 }
