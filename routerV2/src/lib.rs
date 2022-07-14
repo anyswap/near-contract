@@ -2,9 +2,10 @@ use near_contract_standards::fungible_token::receiver::FungibleTokenReceiver;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::UnorderedMap;
 use near_sdk::json_types::{ValidAccountId, U128};
+use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{
-    env, ext_contract, log, near_bindgen, AccountId, Balance, BorshStorageKey, Gas, PanicOnDefault,
-    Promise, PromiseOrValue, PromiseResult,
+    env, ext_contract, log, near_bindgen, serde_json, AccountId, Balance, BorshStorageKey, Gas,
+    PanicOnDefault, Promise, PromiseOrValue, PromiseResult,
 };
 
 near_sdk::setup_alloc!();
@@ -35,6 +36,23 @@ enum StorageKey {
     AnyToken,
 }
 
+/// Message parameters to receive via token function call.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+#[serde(untagged)]
+enum Actions {
+    AnySwapOut {
+        bind_id: AccountId,
+        to_chain_id: U128,
+    },
+    DepositUnderlying {
+        receiver_id: AccountId,
+    },
+    Withdraw {
+        to: AccountId,
+    },
+}
+
 #[near_bindgen]
 impl Router {
     #[init]
@@ -55,6 +73,14 @@ impl Router {
         }
     }
 
+    fn valid_mpc_id(&self) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.mpc_id,
+            "Router: only mpc"
+        );
+    }
+
     pub fn mpc_id(&self) -> AccountId {
         self.mpc_id.to_string()
     }
@@ -67,60 +93,42 @@ impl Router {
     }
 
     pub fn change_mpc_id(&mut self, new_mpc_id: AccountId) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
         self.pending_mpc_id = Some(new_mpc_id);
     }
 
     pub fn apply_mpc_id(&mut self) {
+        self.valid_mpc_id();
+        let new_mpc_id = self.pending_mpc_id();
         assert!(
-            env::predecessor_account_id() == self.mpc_id,
-            "Router: FORBIDDEN"
-        );
-        assert!(
-            self.pending_mpc_id() != String::from(""),
+            new_mpc_id != String::from(""),
             "Router: must call change_mpc_id before this"
         );
+        log!(
+            "Router: Change Mpc Id from {} to {}",
+            self.mpc_id,
+            new_mpc_id
+        );
         self.pending_mpc_id = None;
-        self.mpc_id = self.pending_mpc_id();
+        self.mpc_id = new_mpc_id;
     }
 
     pub fn set_pause_in(&mut self, pause_in: bool) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
+        self.valid_mpc_id();
         self.pause_in = pause_in;
     }
 
     pub fn set_pause_out(&mut self, pause_out: bool) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
+        self.valid_mpc_id();
         self.pause_out = pause_out;
     }
 
     pub fn set_pause_all(&mut self, pause_all: bool) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
+        self.valid_mpc_id();
         self.pause_all = pause_all;
     }
 
     pub fn set_underlying_and_anytoken(&mut self, underlying: AccountId, any_token: AccountId) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
+        self.valid_mpc_id();
         self.underlying_to_anytoken.insert(&underlying, &any_token);
         self.anytoken_to_underlying.insert(&any_token, &underlying);
     }
@@ -138,11 +146,7 @@ impl Router {
     }
 
     pub fn change_any_near(&mut self, new_any_near: AccountId) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
+        self.valid_mpc_id();
         self.any_near = new_any_near;
     }
 
@@ -151,11 +155,7 @@ impl Router {
     }
 
     pub fn set_base_gas(&mut self, gas: Gas) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
+        self.valid_mpc_id();
         self.base_gas = gas;
     }
 
@@ -168,11 +168,7 @@ impl Router {
     }
 
     pub fn change_chain_id(&mut self, new_chain_id: String) {
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
+        self.valid_mpc_id();
         self.chain_id = new_chain_id;
     }
 
@@ -185,12 +181,8 @@ impl Router {
     }
 
     fn valid_tx(&mut self, tx: String, index: u8, amount: u128) {
+        self.valid_mpc_id();
         assert!(!self.pause_in && !self.pause_all, "Router: pause");
-        assert_eq!(
-            env::predecessor_account_id(),
-            self.mpc_id,
-            "Router: only mpc"
-        );
         assert!(!self.check_tx(tx.clone(), index), "Router: tx exists");
         assert!(amount > 0, "The amount should be a positive number");
         self.txs.insert(&(tx.clone(), index), &true);
@@ -441,8 +433,8 @@ pub trait FungibleTokenContract {
 
 #[ext_contract(ext_any_token)]
 pub trait AnyTokenTrait {
-    fn burn(&mut self, account_id: AccountId, amount: U128);
-    fn mint(&mut self, account_id: AccountId, amount: U128);
+    fn burn(&mut self, account_id: AccountId, amount: U128) -> PromiseOrValue<U128>;
+    fn mint(&mut self, account_id: AccountId, amount: U128) -> PromiseOrValue<U128>;
 }
 
 #[near_bindgen]
@@ -454,12 +446,14 @@ impl FungibleTokenReceiver for Router {
         msg: String,
     ) -> PromiseOrValue<U128> {
         let sender = sender_id.to_string();
-        let decode_msg: Vec<&str> = msg.as_str().split(" ").collect();
+        // let decode_msg: Vec<&str> = msg.as_str().split(" ").collect();
         let mut token = env::predecessor_account_id();
-        match decode_msg[0] {
-            "any_swap_out" => {
-                // any_swap_out bindaddr chain_id
-                assert!(decode_msg.len() == 3, "decode swap_out msg error!");
+        let message = serde_json::from_str::<Actions>(&msg).expect("Router: msg parse not match");
+        match message {
+            Actions::AnySwapOut {
+                bind_id,
+                to_chain_id,
+            } => {
                 match self.underlying_to_anytoken.get(&token) {
                     Some(any_token) => token = any_token,
                     _ => {}
@@ -468,74 +462,138 @@ impl FungibleTokenReceiver for Router {
                     "LogSwapOut token {} from {} to {} amount {} fromChainId {} toChainId {}",
                     token,
                     sender,
-                    decode_msg[1].to_string(),
+                    bind_id,
                     amount.0,
                     self.chain_id,
-                    decode_msg[2].to_string()
+                    to_chain_id.0
                 );
                 PromiseOrValue::Value(U128::from(0))
             }
-            "deposit_underlying" => {
-                // deposit_underlying bindaddr
-                assert!(
-                    decode_msg.len() == 2,
-                    "decode deposit_underlying msg error!"
-                );
+            Actions::DepositUnderlying { receiver_id } => {
                 match self.underlying_to_anytoken.get(&token) {
                     Some(any_token) => {
                         log!(
                             "LogDepositUnderlying token {} from {} to {} amount {}",
                             token,
                             sender,
-                            decode_msg[1].to_string(),
+                            receiver_id,
                             amount.0,
                         );
-                        ext_any_token::mint(
-                            decode_msg[1].to_string(),
+                        ext_any_token::mint(receiver_id, amount, &any_token, NOT_DEPOSIT, BASE_GAS)
+                            .into()
+                    }
+                    _ => PromiseOrValue::Value(amount),
+                }
+            }
+            Actions::Withdraw { to } => match token == self.any_near() {
+                true => {
+                    Promise::new(to).transfer(amount.0);
+                    PromiseOrValue::Value(U128(0))
+                }
+                _ => match self.anytoken_to_underlying.get(&token) {
+                    Some(underlying) => {
+                        log!(
+                            "LogWithdraw token {} from {} to {} amount {}",
+                            token,
+                            sender,
+                            to,
+                            amount.0,
+                        );
+                        ext_fungible_token::ft_transfer(
+                            to,
                             amount,
-                            &any_token,
-                            NOT_DEPOSIT,
+                            None,
+                            &underlying,
+                            ONE_YOCTO_DEPOSIT,
                             BASE_GAS,
                         )
                         .into()
                     }
                     _ => PromiseOrValue::Value(amount),
-                }
-            }
-            "withdraw" => {
-                // withdraw bindaddr
-                assert!(decode_msg.len() == 2, "decode withdraw msg error!");
-                match token == self.any_near() {
-                    true => Promise::new(decode_msg[1].to_string().to_string())
-                        .transfer(amount.0)
-                        .into(),
-                    _ => match self.anytoken_to_underlying.get(&token) {
-                        Some(underlying) => {
-                            log!(
-                                "LogWithdraw token {} from {} to {} amount {}",
-                                token,
-                                sender,
-                                decode_msg[1].to_string(),
-                                amount.0,
-                            );
-                            ext_fungible_token::ft_transfer(
-                                decode_msg[1].to_string(),
-                                amount,
-                                None,
-                                &underlying,
-                                ONE_YOCTO_DEPOSIT,
-                                BASE_GAS,
-                            )
-                            .into()
-                        }
-                        _ => PromiseOrValue::Value(amount),
-                    },
-                }
-            }
-            _ => {
-                log!("Router: msg parse not match");
-                PromiseOrValue::Value(amount)
-            }
+                },
+            },
         }
+        // match decode_msg[0] {
+        //     "any_swap_out" => {
+        //         // any_swap_out bindaddr chain_id
+        //         assert!(decode_msg.len() == 3, "decode swap_out msg error!");
+        //         match self.underlying_to_anytoken.get(&token) {
+        //             Some(any_token) => token = any_token,
+        //             _ => {}
+        //         }
+        //         log!(
+        //             "LogSwapOut token {} from {} to {} amount {} fromChainId {} toChainId {}",
+        //             token,
+        //             sender,
+        //             decode_msg[1].to_string(),
+        //             amount.0,
+        //             self.chain_id,
+        //             decode_msg[2].to_string()
+        //         );
+        //         PromiseOrValue::Value(U128::from(0))
+        //     }
+        //     "deposit_underlying" => {
+        //         // deposit_underlying bindaddr
+        //         assert!(
+        //             decode_msg.len() == 2,
+        //             "decode deposit_underlying msg error!"
+        //         );
+        //         match self.underlying_to_anytoken.get(&token) {
+        //             Some(any_token) => {
+        //                 log!(
+        //                     "LogDepositUnderlying token {} from {} to {} amount {}",
+        //                     token,
+        //                     sender,
+        //                     decode_msg[1].to_string(),
+        //                     amount.0,
+        //                 );
+        //                 ext_any_token::mint(
+        //                     decode_msg[1].to_string(),
+        //                     amount,
+        //                     &any_token,
+        //                     NOT_DEPOSIT,
+        //                     BASE_GAS,
+        //                 )
+        //                 .into()
+        //             }
+        //             _ => PromiseOrValue::Value(amount),
+        //         }
+        //     }
+        //     "withdraw" => {
+        //         // withdraw bindaddr
+        //         assert!(decode_msg.len() == 2, "decode withdraw msg error!");
+        //         match token == self.any_near() {
+        //             true => {
+        //                 Promise::new(decode_msg[1].to_string().to_string()).transfer(amount.0);
+        //                 PromiseOrValue::Value(U128(0))
+        //             }
+        //             _ => match self.anytoken_to_underlying.get(&token) {
+        //                 Some(underlying) => {
+        //                     log!(
+        //                         "LogWithdraw token {} from {} to {} amount {}",
+        //                         token,
+        //                         sender,
+        //                         decode_msg[1].to_string(),
+        //                         amount.0,
+        //                     );
+        //                     ext_fungible_token::ft_transfer(
+        //                         decode_msg[1].to_string(),
+        //                         amount,
+        //                         None,
+        //                         &underlying,
+        //                         ONE_YOCTO_DEPOSIT,
+        //                         BASE_GAS,
+        //                     )
+        //                     .into()
+        //                 }
+        //                 _ => PromiseOrValue::Value(amount),
+        //             },
+        //         }
+        //     }
+        //     _ => {
+        //         log!("Router: msg parse not match");
+        //         PromiseOrValue::Value(amount)
+        //     }
+        // }
     }
 }
