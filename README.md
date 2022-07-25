@@ -2,7 +2,7 @@
 near-contract
 
 # near env
-```bash
+```text
 1) 安装rust环境  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    添加工具链 rustup target add wasm32-unknown-unknown
 2) 安装near-cli  npm install -g near-cli
@@ -11,13 +11,13 @@ near-contract
 ```
 
 # contract env
-```bash
+```text
 1)  测试 cargo test -- --nocapture
 2)  编译 env 'RUSTFLAGS=-C link-arg=-s' cargo build --target wasm32-unknown-unknown --release
 ```
 
 # deploy
-```bash
+```text
 1) 登录 near login （~/.near-credentials文件夹下生成密钥对文件）
    或者 near generate-key example.testnet --seedPhrase="xxx"
 2) 创建合约账户 near create-account CONTRACT_NAME.ACCOUNT_ID --masterAccount ACCOUNT_ID --initialBalance 10
@@ -25,13 +25,13 @@ near-contract
 ```
 
 # call
-```bash
+```text
 1) 合约调用 near call CONTRACT_ID func_name '{"key": "value"}' --accountId ACCOUNT_ID
 2) 合约读取 near view CONTRACT_ID read '{"key": "value"}' --accountId ACCOUNT_ID
 ```
 
 # question
-```bash
+```text
 1) linker `cc` not found
    运行 sudo apt install build-essential
 2) near command not found
@@ -39,16 +39,26 @@ near-contract
    配置export PATH="全局路径:$PATH"
 ```
 
-# swapIn 
-```bash
-1) near call contractId storage_deposit '{}' --accountId accountId --deposit amount
-   / near call contractId storage_deposit '{"account_id":"other_account_id"}' --accountId accountId --deposit amount
-2) near call contractId swap_out '{"account_id":"account_id","amount":amount}' --accountId accountId
-3) near call contractId swap_in '{"tx":"tx","account_id":"account_id","amount":amount}' --accountId accountId
+# underlying
+```text
+1) near无须部署
+2）调用ft_transfer方法，memo方式跨出
+```
+
+# anytoken
+```text
+1) near部署anytoken合约 记得修改元数据(name,symbol,coin等
+2）调用swap_out方法跨出  receiver_id: AccountId, amount: U128, to_chain_id: U128
+```
+
+# native
+```text
+1) mpc部署mpcPool合约
+2）调用swap_out方法跨出 receiver_id: AccountId, to_chain_id: U128
 ```
 
 # docs
-```bash
+```text
 1) near-cli:  https://docs.near.org/docs/tools/near-cli
 2) near-sdk-rs:  https://www.near-sdk.io/
 ```
