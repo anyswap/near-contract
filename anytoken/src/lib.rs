@@ -157,8 +157,7 @@ impl AnyToken {
         let sender: ValidAccountId = env::predecessor_account_id().try_into().unwrap();
         self.token.internal_withdraw(&receiver_id, amount.0);
         log!(
-            "SwapOut {} sender_id {} receiver_id {} amount {} to_chain_id {}",
-            env::current_account_id(),
+            "SwapOut sender_id {} receiver_id {} amount {} to_chain_id {}",
             sender,
             receiver_id,
             amount.0,

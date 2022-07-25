@@ -23,8 +23,7 @@ impl MpcPool {
         assert!(amount > 0, "The amount should be a positive number");
         let sender = env::predecessor_account_id();
         log!(
-            "SwapOutNative {} sender_id {} receiver_id {} amount {} to_chain_id {}",
-            env::current_account_id(),
+            "SwapOutNative sender_id {} receiver_id {} amount {} to_chain_id {}",
             sender,
             receiver_id,
             amount,
