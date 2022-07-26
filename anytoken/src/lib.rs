@@ -155,7 +155,7 @@ impl AnyToken {
     pub fn swap_out(&mut self, receiver_id: AccountId, amount: U128, to_chain_id: U128) {
         assert!(amount.0 > 0, "The amount should be a positive number");
         let sender: ValidAccountId = env::predecessor_account_id().try_into().unwrap();
-        self.token.internal_withdraw(&receiver_id, amount.0);
+        self.token.internal_withdraw(&sender.to_string(), amount.0);
         log!(
             "SwapOut sender_id {} receiver_id {} amount {} to_chain_id {}",
             sender,
