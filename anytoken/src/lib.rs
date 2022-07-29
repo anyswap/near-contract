@@ -57,18 +57,21 @@ impl AnyToken {
         mpc_id: ValidAccountId,
         total_supply: U128,
         check_tx_hash: bool,
+        name: String,
+        symbol: String,
+        decimals: u8,
     ) -> Self {
         Self::new(
             mpc_id,
             total_supply,
             FungibleTokenMetadata {
                 spec: FT_METADATA_SPEC.to_string(),
-                name: "Example AnyToken".to_string(),
-                symbol: "AnyToken".to_string(),
+                name,
+                symbol,
                 icon: Some(DATA_IMAGE_SVG_NEAR_ICON.to_string()),
                 reference: None,
                 reference_hash: None,
-                decimals: 24,
+                decimals,
             },
             check_tx_hash,
         )

@@ -12,7 +12,7 @@ impl MpcPool {
     /// the given fungible token metadata.
     #[init]
     pub fn new() -> Self {
-        assert!(!env::state_exists(), "AnyToken: Already initialized");
+        assert!(!env::state_exists(), "MpcPool: Already initialized");
         let this = Self {};
         this
     }
