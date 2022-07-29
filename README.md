@@ -47,14 +47,20 @@ near-contract
 
 # anytoken
 ```text
-1) near部署anytoken合约 记得修改元数据(name,symbol,coin等
+1) near部署anytoken合约
+near deploy --wasmFile xxx.wasm --accountId contractId
+near call contractId new_default_meta '{"mpc_id": "","total_supply": "0",check_tx_hash: true,"name": "","symbol": "","decimals": 24} --accountId xxx
 2）调用swap_out方法跨出  receiver_id: AccountId, amount: U128, to_chain_id: U128
+near call contractId swap_out '{"receiver_id": "","amount": "0","to_chain_id": "4"} --accountId xxx
 ```
 
 # native
 ```text
 1) mpc部署mpcPool合约
+near deploy --wasmFile xxx.wasm --accountId contractId
+near call contractId new '{} --accountId xxx
 2）调用swap_out方法跨出 receiver_id: AccountId, to_chain_id: U128
+near call contractId swap_out '{"receiver_id":"","to_chain_id":"4"} --accountId xxx --depositYocto xxxxxxx
 ```
 
 # docs
