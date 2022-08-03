@@ -116,6 +116,10 @@ impl AnyToken {
         log!("Update check tx hash flag to {}", flag);
     }
 
+    pub fn mpc_id(&mut self) -> AccountId {
+        self.mpc_id.clone()
+    }
+
     pub fn change_mpc_id(&mut self, new_mpc_id: AccountId) {
         assert!(env::predecessor_account_id() == self.mpc_id, "FORBIDDEN");
         self.new_mpc_id = new_mpc_id;
