@@ -116,7 +116,7 @@ impl AnyToken {
         log!("Update check tx hash flag to {}", flag);
     }
 
-    pub fn mpc_id(&mut self) -> AccountId {
+    pub fn mpc_id(&self) -> AccountId {
         self.mpc_id.clone()
     }
 
