@@ -21,12 +21,10 @@ use near_contract_standards::fungible_token::metadata::{
 use near_contract_standards::fungible_token::FungibleToken;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LazyOption, UnorderedSet};
-use near_sdk::json_types::{ValidAccountId, U128};
+use near_sdk::json_types::U128;
 use near_sdk::{
     env, log, near_bindgen, AccountId, Balance, BorshStorageKey, PanicOnDefault, PromiseOrValue,
 };
-
-near_sdk::setup_alloc!();
 
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
@@ -54,7 +52,7 @@ impl AnyToken {
     /// default metadata (for example purposes only).
     #[init]
     pub fn new_default_meta(
-        mpc_id: ValidAccountId,
+        mpc_id: AccountId,
         total_supply: U128,
         check_tx_hash: bool,
         name: String,
@@ -81,7 +79,7 @@ impl AnyToken {
     /// the given fungible token metadata.
     #[init]
     pub fn new(
-        mpc_id: ValidAccountId,
+        mpc_id: AccountId,
         total_supply: U128,
         metadata: FungibleTokenMetadata,
         check_tx_hash: bool,
@@ -92,13 +90,12 @@ impl AnyToken {
             token: FungibleToken::new(StorageKey::FungibleToken),
             metadata: LazyOption::new(StorageKey::Metadata, Some(&metadata)),
             txs: UnorderedSet::new(StorageKey::TxHash),
-            mpc_id: mpc_id.to_string(),
-            new_mpc_id: mpc_id.to_string(),
+            mpc_id: mpc_id.clone(),
+            new_mpc_id: mpc_id.clone(),
             check_tx_hash,
         };
-        this.token.internal_register_account(mpc_id.as_ref());
-        this.token
-            .internal_deposit(mpc_id.as_ref(), total_supply.into());
+        this.token.internal_register_account(&mpc_id);
+        this.token.internal_deposit(&mpc_id, total_supply.into());
         this
     }
 
@@ -130,7 +127,7 @@ impl AnyToken {
             env::predecessor_account_id() == self.new_mpc_id,
             "FORBIDDEN"
         );
-        self.mpc_id = self.new_mpc_id.to_string();
+        self.mpc_id = self.new_mpc_id.clone();
     }
 
     pub fn swap_in(
@@ -161,8 +158,8 @@ impl AnyToken {
 
     pub fn swap_out(&mut self, receiver_id: AccountId, amount: U128, to_chain_id: U128) {
         assert!(amount.0 > 0, "The amount should be a positive number");
-        let sender: ValidAccountId = env::predecessor_account_id().try_into().unwrap();
-        self.token.internal_withdraw(&sender.to_string(), amount.0);
+        let sender: AccountId = env::predecessor_account_id().try_into().unwrap();
+        self.token.internal_withdraw(&sender, amount.0);
         log!(
             "SwapOut sender_id {} receiver_id {} amount {} to_chain_id {}",
             sender,
